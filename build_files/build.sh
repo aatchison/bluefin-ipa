@@ -21,8 +21,17 @@ test -f /usr/lib64/sssd/libsss_ipa.so
 # bluefin-dx rebase dropped ghostty off clement.
 dnf5 -y install mosh
 
-# Still commented until confirmed available in the enabled repos for both bases
-# -- a missing package here fails the build for every host at once.
-# dnf5 -y install ghostty
+# ghostty is NOT in the Fedora repos -- it comes from the scottames COPR, which
+# is how judah had it layered. Enable the COPR only for this install, then
+# disable it again: a host booting this image should not carry a third-party
+# repo enabled at runtime, where it could silently shadow base packages later.
+dnf5 -y install dnf5-plugins
+dnf5 -y copr enable scottames/ghostty
+dnf5 -y install ghostty
+dnf5 -y copr disable scottames/ghostty
+
+# Prove the two packages that make a switch non-regressive for judah/clement are
+# actually here, rather than trusting the install exited 0.
+rpm -q ghostty mosh
 
 dnf5 clean all
