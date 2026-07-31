@@ -1,0 +1,86 @@
+name: build
+
+on:
+  schedule:
+    # Upstream Bluefin builds early UTC; 12:00 gives it clearance.
+    - cron: "0 12 * * *"
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      # One broken variant should not hide the other's result.
+      fail-fast: false
+      matrix:
+        variant: [bluefin, bluefin-dx]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reclaim runner disk
+        # Bluefin images are large; the default runner fills up mid-pull.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h /
+
+      - name: Image metadata
+        id: meta
+        run: |
+          {
+            echo "image=${REGISTRY}/${{ github.repository_owner }}/${{ matrix.variant }}-ipa"
+            echo "date=$(date -u +%Y%m%d)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          podman build \
+            --build-arg BASE_IMAGE="ghcr.io/ublue-os/${{ matrix.variant }}" \
+            --build-arg BASE_TAG="latest" \
+            --tag "${{ steps.meta.outputs.image }}:latest" \
+            --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}" \
+            .
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        run: |
+          podman login ghcr.io \
+            -u "${{ github.actor }}" \
+            -p "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        id: push
+        run: |
+          podman push \
+            --digestfile /tmp/digest \
+            "${{ steps.meta.outputs.image }}:latest"
+          podman push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}"
+          echo "digest=$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+
+      - name: Sign
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ""
+        run: |
+          cosign sign -y --key env://COSIGN_PRIVATE_KEY \
+            "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
