@@ -56,25 +56,34 @@ jobs:
             --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}" \
             .
 
+      - uses: sigstore/cosign-installer@v3
+        if: github.event_name != 'pull_request'
+
+      # podman and cosign do not share a credential store: podman writes
+      # $XDG_RUNTIME_DIR/containers/auth.json, cosign (go-containerregistry)
+      # reads ~/.docker/config.json. Both must be logged in independently, or
+      # signing fails at the signature push with UNAUTHORIZED.
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          podman login ghcr.io \
-            -u "${{ github.actor }}" \
-            -p "${{ secrets.GITHUB_TOKEN }}"
+          echo "$GHCR_TOKEN" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "$GHCR_TOKEN" | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Push
+      # Push the immutable date tag first, sign that digest, and only then
+      # push :latest -- which resolves to the same already-signed digest.
+      # :latest is what every host follows, so it must never be reachable in
+      # an unsigned state; a failure anywhere before the last step leaves the
+      # fleet on the previous good image rather than on an unsigned new one.
+      - name: Push date tag
         if: github.event_name != 'pull_request'
         id: push
         run: |
           podman push \
             --digestfile /tmp/digest \
-            "${{ steps.meta.outputs.image }}:latest"
-          podman push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}"
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}"
           echo "digest=$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
-
-      - uses: sigstore/cosign-installer@v3
-        if: github.event_name != 'pull_request'
 
       - name: Sign
         if: github.event_name != 'pull_request'
@@ -83,4 +92,15 @@ jobs:
           COSIGN_PASSWORD: ""
         run: |
           cosign sign -y --key env://COSIGN_PRIVATE_KEY \
+            "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
+
+      - name: Promote to :latest
+        if: github.event_name != 'pull_request'
+        run: |
+          podman push "${{ steps.meta.outputs.image }}:latest"
+
+      - name: Verify the published signature
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign verify --key cosign.pub \
             "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
