@@ -102,10 +102,20 @@ the image is the only source: `sudo rpm-ostree uninstall freeipa-client`.
 
 ### 4. Updates
 
-Nothing further. Bluefin ships **uupd**, which masks
-`bootc-fetch-apply-updates.timer` deliberately and supersedes it — `uupd.timer`
-pulls the OS image, flatpaks and distrobox containers in one coordinated pass.
-It will follow `:latest` on your image the same way it followed upstream's.
+Nothing further. Bluefin ships **uupd** and enables `uupd.timer`, which pulls the
+OS image, flatpaks and distrobox containers in one coordinated pass. It will
+follow `:latest` on your image the same way it followed upstream's.
+
+The other update timers are left off, but *disabled*, not masked — Bluefin's
+build explicitly disables `rpm-ostreed-automatic.timer`, and
+`bootc-fetch-apply-updates.timer` ships disabled by bootc's own preset and is
+never touched. (Bluefin **LTS** does mask them; this repo does not build on LTS.)
+So `systemctl unmask` is a no-op here and proves nothing. To confirm what is
+actually driving updates:
+
+```bash
+systemctl is-enabled uupd.timer bootc-fetch-apply-updates.timer rpm-ostreed-automatic.timer
+```
 
 ## Rolling back
 
