@@ -24,10 +24,14 @@ jobs:
       packages: write
       id-token: write
     strategy:
-      # One broken variant should not hide the other's result.
+      # One broken variant/channel should not hide the others' results.
       fail-fast: false
       matrix:
         variant: [bluefin, bluefin-dx]
+        # Hosts track different channels: claudia3/judah are on :latest,
+        # work-dev-2 is on :stable. Switching a host between channels is a
+        # behaviour change, so build both rather than forcing a move.
+        channel: [latest, stable]
 
     steps:
       - uses: actions/checkout@v4
@@ -44,16 +48,19 @@ jobs:
         run: |
           {
             echo "image=${REGISTRY}/${{ github.repository_owner }}/${{ matrix.variant }}-ipa"
-            echo "date=$(date -u +%Y%m%d)"
+            # Date tags are channel-qualified: :latest-YYYYMMDD and
+            # :stable-YYYYMMDD. An unqualified date would collide between
+            # channels and make a pinned rollback ambiguous.
+            echo "datetag=${{ matrix.channel }}-$(date -u +%Y%m%d)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: |
           podman build \
             --build-arg BASE_IMAGE="ghcr.io/ublue-os/${{ matrix.variant }}" \
-            --build-arg BASE_TAG="latest" \
-            --tag "${{ steps.meta.outputs.image }}:latest" \
-            --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}" \
+            --build-arg BASE_TAG="${{ matrix.channel }}" \
+            --tag "${{ steps.meta.outputs.image }}:${{ matrix.channel }}" \
+            --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.datetag }}" \
             .
 
       - uses: sigstore/cosign-installer@v3
@@ -82,7 +89,7 @@ jobs:
         run: |
           podman push \
             --digestfile /tmp/digest \
-            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.date }}"
+            "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.datetag }}"
           echo "digest=$(cat /tmp/digest)" >> "$GITHUB_OUTPUT"
 
       - name: Sign
@@ -94,10 +101,10 @@ jobs:
           cosign sign -y --key env://COSIGN_PRIVATE_KEY \
             "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
 
-      - name: Promote to :latest
+      - name: Promote channel tag
         if: github.event_name != 'pull_request'
         run: |
-          podman push "${{ steps.meta.outputs.image }}:latest"
+          podman push "${{ steps.meta.outputs.image }}:${{ matrix.channel }}"
 
       - name: Verify the published signature
         if: github.event_name != 'pull_request'
