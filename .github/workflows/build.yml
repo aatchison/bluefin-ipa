@@ -32,6 +32,13 @@ jobs:
         # work-dev-2 is on :stable. Switching a host between channels is a
         # behaviour change, so build both rather than forcing a move.
         channel: [latest, stable]
+        include:
+          # fulton is a headless server on the ucore HCI image. Confirmed via
+          # `bootc status`: ghcr.io/ublue-os/ucore-hci:stable. It is an explicit
+          # include rather than another row in the cross product because it
+          # tracks :stable only -- a ucore-hci:latest row would just fail.
+          - variant: ucore-hci
+            channel: stable
 
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +66,7 @@ jobs:
           podman build \
             --build-arg BASE_IMAGE="ghcr.io/ublue-os/${{ matrix.variant }}" \
             --build-arg BASE_TAG="${{ matrix.channel }}" \
+            --build-arg VARIANT="${{ matrix.variant }}" \
             --tag "${{ steps.meta.outputs.image }}:${{ matrix.channel }}" \
             --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.datetag }}" \
             .
