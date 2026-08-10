@@ -1,2 +1,7 @@
-cosign.key
+# The private signing key must never be committed. The previous patterns were
+# `cosign.key` and `*.key`, which both MISS `cosign.key.gpg` -- and that is
+# exactly how the encrypted key ended up published in commit 7960b21 on
+# 2026-07-31, public for 10 days until an audit on 2026-08-10.
+cosign.key*
 *.key
+*.key.gpg
