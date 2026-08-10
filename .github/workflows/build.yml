@@ -58,7 +58,15 @@ jobs:
             # Date tags are channel-qualified: :latest-YYYYMMDD and
             # :stable-YYYYMMDD. An unqualified date would collide between
             # channels and make a pinned rollback ambiguous.
-            echo "datetag=${{ matrix.channel }}-$(date -u +%Y%m%d)"
+            #
+            # The run number makes the tag IMMUTABLE. Without it a rebuild on
+            # the same UTC day -- a manual dispatch, a push, a re-run after a
+            # flake -- silently moves the tag, so a pin recorded as known-good
+            # in the morning can resolve to an untested image by the evening.
+            # That defeats the rollback procedure in the README, which tells
+            # you to switch a host to a specific date tag. Digest pinning also
+            # works and is stricter; this just makes the documented path safe.
+            echo "datetag=${{ matrix.channel }}-$(date -u +%Y%m%d)-${{ github.run_number }}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build
@@ -109,13 +117,21 @@ jobs:
           cosign sign -y --key env://COSIGN_PRIVATE_KEY \
             "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
 
-      - name: Promote channel tag
-        if: github.event_name != 'pull_request'
-        run: |
-          podman push "${{ steps.meta.outputs.image }}:${{ matrix.channel }}"
-
+      # Verify BEFORE promoting, not after. If SIGNING_SECRET and the committed
+      # cosign.pub ever disagree -- which is exactly the window a key rotation
+      # opens -- signing still succeeds, so the only thing standing between a
+      # mismatched key and an unverifiable :latest is this check. Run it while
+      # :latest still points at the previous good image: the job goes red, the
+      # date tag is orphaned, and every host keeps updating from the old digest.
+      # Promoting first would leave the fleet unable to satisfy its own
+      # sigstoreSigned policy, with a red CI run as the only signal.
       - name: Verify the published signature
         if: github.event_name != 'pull_request'
         run: |
           cosign verify --key cosign.pub \
             "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
+
+      - name: Promote channel tag
+        if: github.event_name != 'pull_request'
+        run: |
+          podman push "${{ steps.meta.outputs.image }}:${{ matrix.channel }}"
