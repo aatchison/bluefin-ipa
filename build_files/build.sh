@@ -96,6 +96,39 @@ esac
 systemctl enable autofs.service oddjobd.service
 systemctl is-enabled autofs.service oddjobd.service
 
+# /var is host state on an ostree/bootc system, NOT image content: anything a
+# build leaves under /var is discarded, and a deployed host boots with a /var
+# populated only by systemd-tmpfiles. So the directories freeipa-client and
+# certmonger declare in their RPMs simply do not exist on a fresh host, even
+# though the packages above are unquestionably installed. fulton hit this on
+# 2026-08-10 -- `rpm -q freeipa-client` green, and ipa-client-install failing
+# one mkdir at a time on /var/lib/ipa-client/sysrestore, then .../pki. The
+# config goes in /usr/lib/tmpfiles.d (image) and not /etc/tmpfiles.d, which is
+# host config a host is entitled to edit or a rebase to leave behind.
+install -D -m 0644 -o root -g root \
+    /ctx/bluefin-ipa-var.conf /usr/lib/tmpfiles.d/bluefin-ipa-var.conf
+
+# Parse it here, at build time, because a bad tmpfiles line does not fail --
+# it is logged once by systemd-tmpfiles-setup at boot and skipped, leaving the
+# host in exactly the state this file exists to prevent, with a green build and
+# a green `test -f`. --dry-run is what makes this safe to run in the build:
+# it resolves and validates every line without creating anything, which matters
+# because directories created here under /var would be thrown away regardless.
+systemd-tmpfiles --dry-run --create /usr/lib/tmpfiles.d/bluefin-ipa-var.conf
+
+# Parsing clean is not the same as saying anything. An empty -- or truncated --
+# file also parses clean, so assert each directory is actually declared.
+for d in /var/lib/ipa-client /var/lib/ipa-client/sysrestore \
+         /var/lib/ipa-client/pki /var/lib/ipa /var/lib/certmonger \
+         /var/lib/certmonger/cas /var/lib/certmonger/local \
+         /var/lib/certmonger/requests; do
+    grep -Eq "^d[[:space:]]+${d}[[:space:]]" \
+        /usr/lib/tmpfiles.d/bluefin-ipa-var.conf || {
+        echo "build.sh: tmpfiles config does not declare ${d}" >&2
+        exit 1
+    }
+done
+
 # Prove the packages that make a switch non-regressive are actually here,
 # rather than trusting the install exited 0.
 rpm -q mosh freeipa-client oddjob-mkhomedir

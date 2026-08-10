@@ -50,6 +50,16 @@ then disables again so hosts do not boot with a third-party repo live.
 `ipa-client-install` is what should write it. No secret belongs in a registry
 image.
 
+**Also in, and easy to miss:** `/usr/lib/tmpfiles.d/bluefin-ipa-var.conf`. On an
+ostree/bootc system `/var` is host state, not image content — anything the build
+writes there is discarded, and a deployed host starts with a `/var` populated only
+by `systemd-tmpfiles`. So a baked-in RPM can be fully installed and still be
+missing every directory it declares under `/var`. fulton hit this on 2026-08-10:
+`rpm -q freeipa-client` green, and `ipa-client-install` failing one `mkdir` at a
+time on `/var/lib/ipa-client/sysrestore`, then `/var/lib/ipa-client/pki`.
+`freeipa-client` ships no `tmpfiles.d` rules of its own, so that file supplies
+them, for `certmonger` too.
+
 `build_files/build.sh` asserts `/usr/lib64/sssd/libsss_ipa.so` exists before the
 build succeeds — the absence of that file is the exact tell for "sssd.conf says
 `id_provider = ipa` but there is no IPA code on disk".
