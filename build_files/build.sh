@@ -67,6 +67,58 @@ case "$VARIANT" in
     dnf5 -y install ghostty
     dnf5 -y copr disable scottames/ghostty
     rpm -q ghostty
+
+    # virt-manager ships in the bluefin-dx base and is absent from plain
+    # bluefin. judah is on plain bluefin and connects only to REMOTE libvirt
+    # hosts, so install the client half and stop there.
+    #
+    # install_weak_deps=False is load-bearing, not tidying. virt-manager
+    # Recommends libvirt-daemon-kvm, so a plain `dnf5 install virt-manager`
+    # resolves to 156 packages / 272 MiB and turns a laptop into a local
+    # hypervisor -- qemu-system-x86-core, libvirt-daemon, swtpm, virtiofsd,
+    # xen-libs -- none of which a remote-only client ever runs. With weak deps
+    # off it is 20 packages / 50 MiB: the GUI, libvirt-libs/python3-libvirt and
+    # the console widgets (gtk-vnc2, spice-gtk3). openssh-clients and
+    # openssh-askpass are already in the base, which matters more than it looks:
+    # virt-manager sets SSH_ASKPASS_REQUIRE=force, so with no askpass binary a
+    # qemu+ssh:// connection fails to prompt and gives no visible reason.
+    #
+    # This replaces a `brew install virt-manager` on judah, which launched and
+    # then died at
+    #   GLib-GIO-ERROR: Settings schema 'org.virt-manager.virt-manager' is not installed
+    # because brew keeps its schemas in ~/.linuxbrew/share/glib-2.0/schemas and
+    # nothing puts that directory on XDG_DATA_DIRS. The same gap hid the app from
+    # GNOME's menu, so its launcher fell through to a Bazaar "install this" stub.
+    # An RPM has neither problem: schemas land in /usr/share and the desktop
+    # entry is where the shell already looks.
+    if [ "$VARIANT" = "bluefin" ]; then
+        dnf5 -y --setopt=install_weak_deps=False install virt-manager libvirt-client
+        rpm -q libvirt-client
+
+        # Assert the negative: if a rebase or a dependency change starts pulling
+        # the daemon back in, the weak-deps decision above has silently reverted
+        # and this image has regrown a hypervisor nobody asked for. Written as an
+        # if, not `! rpm -q`, for the same reason as the ucore check below --
+        # `set -e` does not trigger on an inverted return value.
+        if rpm -q libvirt-daemon-kvm >/dev/null 2>&1; then
+            echo "build.sh: libvirt-daemon-kvm pulled into a remote-only client" >&2
+            exit 1
+        fi
+    fi
+
+    # Checked for BOTH desktop variants, not just the branch that installs.
+    # bluefin-dx inherits virt-manager from its base, and an upstream drop there
+    # is exactly the silent regression this file exists to catch -- the same
+    # shape as the bluefin -> bluefin-dx rebase that took ghostty off clement.
+    rpm -q virt-manager
+
+    # The package installing is not the property that matters; these three files
+    # are. A GSettings schema that ships uncompiled fails at runtime in precisely
+    # the way brew's did, and a missing desktop entry is what sent the launcher
+    # to Bazaar. Both are invisible to `rpm -q`.
+    test -f /usr/share/glib-2.0/schemas/org.virt-manager.virt-manager.gschema.xml
+    test -f /usr/share/glib-2.0/schemas/gschemas.compiled
+    test -f /usr/share/applications/virt-manager.desktop
     ;;
   ucore-hci)
     # Headless server: no GUI terminal. The rest of ucore-hci's stack --
