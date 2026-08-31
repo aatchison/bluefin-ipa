@@ -48,7 +48,12 @@ rpm -q autofs
 # Extras that were previously layered per-host. Each one here is a package that
 # a bootc switch would otherwise silently drop -- the same way the bluefin ->
 # bluefin-dx rebase dropped ghostty off clement.
-dnf5 -y install mosh
+#
+# Xvfb backs `orca serve` (the Orca IDE's headless runtime) on claudia3: its
+# Electron process segfaults with no display server at all, and the serve
+# wrapper looks for Xvfb by name in PATH. Common to all variants because any
+# host may be asked to act as a headless Orca server.
+dnf5 -y install mosh xorg-x11-server-Xvfb
 
 # Allowlist, not a catch-all. An unrecognised VARIANT is a build error rather
 # than "quietly get the desktop branch" -- otherwise a typo, or a new headless
@@ -99,6 +104,7 @@ systemctl is-enabled autofs.service oddjobd.service
 # Prove the packages that make a switch non-regressive are actually here,
 # rather than trusting the install exited 0.
 rpm -q mosh freeipa-client oddjob-mkhomedir
+test -x /usr/bin/Xvfb
 
 # unbound is the entire reason this image exists for ucore, so assert it
 # directly -- both the package and the account whose absence breaks layering.
