@@ -212,18 +212,33 @@ getent group unbound
 #
 # Pure od rather than python: ucore's CoreOS base has no python3. The PE offset
 # lives at 0x3c; DllCharacteristics is 24 (PE sig + COFF header) + 70 bytes into
-# the optional header, and NX_COMPAT is bit 0x0100.
+# the optional header, and NX_COMPAT is bit 0x0100. Each magic is checked
+# first so a truncated or non-PE file warns instead of reporting a bogus "no":
+# "MZ" (23117), "PE\0\0" (17744), and optional-header 0x10b/0x20b (267/523) --
+# DllCharacteristics sits at offset 70 in both PE32 and PE32+.
 pe_nx_compat() {
     local pe dc
-    pe=$(od -An -tu4 -j 60 -N 4 "$1" | tr -d ' ') || return 1
-    dc=$(od -An -tu2 -j $((pe + 24 + 70)) -N 2 "$1" | tr -d ' ') || return 1
+    [ "$(od -An -tu2 -j 0 -N 2 "$1" | tr -d ' ')" = 23117 ] || return 1
+    pe=$(od -An -tu4 -j 60 -N 4 "$1" | tr -d ' ')
+    [ -n "$pe" ] || return 1
+    [ "$(od -An -tu4 -j "$pe" -N 4 "$1" | tr -d ' ')" = 17744 ] || return 1
+    case "$(od -An -tu2 -j $((pe + 24)) -N 2 "$1" | tr -d ' ')" in
+        267|523) ;;
+        *) return 1 ;;
+    esac
+    dc=$(od -An -tu2 -j $((pe + 24 + 70)) -N 2 "$1" | tr -d ' ')
     [ -n "$dc" ] || return 1
     printf '0x%04x %s' "$dc" "$(( dc & 0x100 ? 1 : 0 ))"
 }
 { set +x; } 2>/dev/null
-efi_found=0
+# Tracked per component: shim is the one this exists for, so grub turning up
+# must not hide shim going missing (or moving out of the paths searched).
+shim_found=0 grub_found=0
 while IFS= read -r f; do
-    efi_found=1
+    case "$f" in
+        */shimx64.efi) shim_found=1 ;;
+        */grubx64.efi) grub_found=1 ;;
+    esac
     if r=$(pe_nx_compat "$f"); then
         read -r dc nx <<<"$r"
         if [ "$nx" = 1 ]; then status=yes; else status=no; fi
@@ -233,7 +248,8 @@ while IFS= read -r f; do
     fi
 done < <(find /usr/lib/efi /usr/lib/bootupd/updates -type f \
              \( -name 'shimx64.efi' -o -name 'grubx64.efi' \) 2>/dev/null | sort)
-[ "$efi_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no shimx64.efi or grubx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
+[ "$shim_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no shimx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
+[ "$grub_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no grubx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
 set -x
 
 dnf5 clean all
