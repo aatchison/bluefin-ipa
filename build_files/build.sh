@@ -199,4 +199,57 @@ test -x /usr/bin/Xvfb
 rpm -q unbound
 getent group unbound
 
+# Report, never fail: is the boot chain NX-compatible yet? fwupd flags
+# "UEFI NX protection: Disabled" on every host because Fedora's shim lacks the
+# IMAGE_DLLCHARACTERISTICS_NX_COMPAT bit -- on judah 2026-11-09, shim 16.1-7 was
+# 0x0000 while grub2 2.12-66 was already 0x0100. Nothing here can fix that: the
+# bit sits inside the Microsoft-signed PE header, so flipping it or rebuilding
+# shim breaks Secure Boot, and the NX shims that do exist (Ubuntu, openSUSE)
+# carry their own vendor cert and would not trust Fedora's grub. The fix arrives
+# when Fedora ships an NX shim, and bootupd carries it to the ESP from the
+# image. This line is how we notice that day. It must stay non-fatal -- a
+# missing or reshaped file is upstream's business, not a reason to block IPA.
+#
+# Pure od rather than python: ucore's CoreOS base has no python3. The PE offset
+# lives at 0x3c; DllCharacteristics is 24 (PE sig + COFF header) + 70 bytes into
+# the optional header, and NX_COMPAT is bit 0x0100. Each magic is checked
+# first so a truncated or non-PE file warns instead of reporting a bogus "no":
+# "MZ" (23117), "PE\0\0" (17744), and optional-header 0x10b/0x20b (267/523) --
+# DllCharacteristics sits at offset 70 in both PE32 and PE32+.
+pe_nx_compat() {
+    local pe dc
+    [ "$(od -An -tu2 -j 0 -N 2 "$1" | tr -d ' ')" = 23117 ] || return 1
+    pe=$(od -An -tu4 -j 60 -N 4 "$1" | tr -d ' ')
+    [ -n "$pe" ] || return 1
+    [ "$(od -An -tu4 -j "$pe" -N 4 "$1" | tr -d ' ')" = 17744 ] || return 1
+    case "$(od -An -tu2 -j $((pe + 24)) -N 2 "$1" | tr -d ' ')" in
+        267|523) ;;
+        *) return 1 ;;
+    esac
+    dc=$(od -An -tu2 -j $((pe + 24 + 70)) -N 2 "$1" | tr -d ' ')
+    [ -n "$dc" ] || return 1
+    printf '0x%04x %s' "$dc" "$(( dc & 0x100 ? 1 : 0 ))"
+}
+{ set +x; } 2>/dev/null
+# Tracked per component: shim is the one this exists for, so grub turning up
+# must not hide shim going missing (or moving out of the paths searched).
+shim_found=0 grub_found=0
+while IFS= read -r f; do
+    case "$f" in
+        */shimx64.efi) shim_found=1 ;;
+        */grubx64.efi) grub_found=1 ;;
+    esac
+    if r=$(pe_nx_compat "$f"); then
+        read -r dc nx <<<"$r"
+        if [ "$nx" = 1 ]; then status=yes; else status=no; fi
+        echo "::notice title=NX_COMPAT ${VARIANT}::${f#/usr/lib/} DllCharacteristics=${dc} NX_COMPAT=${status}"
+    else
+        echo "::warning title=NX_COMPAT ${VARIANT}::could not parse PE header of ${f}"
+    fi
+done < <(find /usr/lib/efi /usr/lib/bootupd/updates -type f \
+             \( -name 'shimx64.efi' -o -name 'grubx64.efi' \) 2>/dev/null | sort)
+[ "$shim_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no shimx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
+[ "$grub_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no grubx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
+set -x
+
 dnf5 clean all
