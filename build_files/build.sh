@@ -199,4 +199,41 @@ test -x /usr/bin/Xvfb
 rpm -q unbound
 getent group unbound
 
+# Report, never fail: is the boot chain NX-compatible yet? fwupd flags
+# "UEFI NX protection: Disabled" on every host because Fedora's shim lacks the
+# IMAGE_DLLCHARACTERISTICS_NX_COMPAT bit -- on judah 2026-11-09, shim 16.1-7 was
+# 0x0000 while grub2 2.12-66 was already 0x0100. Nothing here can fix that: the
+# bit sits inside the Microsoft-signed PE header, so flipping it or rebuilding
+# shim breaks Secure Boot, and the NX shims that do exist (Ubuntu, openSUSE)
+# carry their own vendor cert and would not trust Fedora's grub. The fix arrives
+# when Fedora ships an NX shim, and bootupd carries it to the ESP from the
+# image. This line is how we notice that day. It must stay non-fatal -- a
+# missing or reshaped file is upstream's business, not a reason to block IPA.
+#
+# Pure od rather than python: ucore's CoreOS base has no python3. The PE offset
+# lives at 0x3c; DllCharacteristics is 24 (PE sig + COFF header) + 70 bytes into
+# the optional header, and NX_COMPAT is bit 0x0100.
+pe_nx_compat() {
+    local pe dc
+    pe=$(od -An -tu4 -j 60 -N 4 "$1" | tr -d ' ') || return 1
+    dc=$(od -An -tu2 -j $((pe + 24 + 70)) -N 2 "$1" | tr -d ' ') || return 1
+    [ -n "$dc" ] || return 1
+    printf '0x%04x %s' "$dc" "$(( dc & 0x100 ? 1 : 0 ))"
+}
+{ set +x; } 2>/dev/null
+efi_found=0
+while IFS= read -r f; do
+    efi_found=1
+    if r=$(pe_nx_compat "$f"); then
+        read -r dc nx <<<"$r"
+        if [ "$nx" = 1 ]; then status=yes; else status=no; fi
+        echo "::notice title=NX_COMPAT ${VARIANT}::${f#/usr/lib/} DllCharacteristics=${dc} NX_COMPAT=${status}"
+    else
+        echo "::warning title=NX_COMPAT ${VARIANT}::could not parse PE header of ${f}"
+    fi
+done < <(find /usr/lib/efi /usr/lib/bootupd/updates -type f \
+             \( -name 'shimx64.efi' -o -name 'grubx64.efi' \) 2>/dev/null | sort)
+[ "$efi_found" = 1 ] || echo "::warning title=NX_COMPAT ${VARIANT}::no shimx64.efi or grubx64.efi found under /usr/lib/efi or /usr/lib/bootupd/updates"
+set -x
+
 dnf5 clean all
